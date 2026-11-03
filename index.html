@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Buscador de despesas eleitorais</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #0e1117;
+    color: #fafafa;
+    font: 15px Arial, sans-serif;
+  }
+  main {
+    max-width: 1180px;
+    margin: 45px auto;
+    padding: 0 24px;
+  }
+  h1 { font-size: 34px; margin-bottom: 10px; }
+  h2 { margin-top: 32px; }
+  .sub, .muted { color: #aaa; }
+  .info {
+    background: #19344d;
+    padding: 15px;
+    border-radius: 7px;
+    margin: 20px 0;
+  }
+  .field { margin: 22px 0; }
+  label { font-weight: bold; }
+  .radio-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+    margin-top: 12px;
+  }
+  .radio-options label { font-weight: normal; }
+  input[type="radio"], input[type="checkbox"] {
+    accent-color: #ff4b4b;
+  }
+  .fields {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 9px;
+    margin-top: 12px;
+  }
+  .field-option {
+    background: #262730;
+    border-radius: 6px;
+    padding: 9px;
+    font-size: 13px;
+    font-weight: normal;
+  }
+  textarea {
+    display: block;
+    width: 100%;
+    height: 175px;
+    margin-top: 12px;
+    padding: 15px;
+    border: 1px solid #555;
+    border-radius: 7px;
+    background: #262730;
+    color: white;
+    font: 15px Arial, sans-serif;
+    resize: vertical;
+  }
+  button, .download {
+    display: inline-block;
+    padding: 13px 20px;
+    background: #ff4b4b;
+    border: 0;
+    border-radius: 7px;
+    color: white;
+    font-weight: bold;
+    cursor: pointer;
+    text-decoration: none;
+  }
+  button:disabled { opacity: .5; cursor: wait; }
+  #buscar { width: 100%; }
+  .download { margin: 12px 12px 12px 0; }
+  .status { margin: 15px 0; color: #ccc; }
+  .erro { color: #ff9999; }
+  .table-wrap { overflow-x: auto; margin-top: 15px; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 12px;
+  }
+  th, td {
+    border: 1px solid #444;
+    padding: 9px;
+    text-align: left;
+    white-space: nowrap;
+  }
+  th { background: #262730; }
+  tr:nth-child(even) { background: #171a21; }
+  details { margin: 22px 0; }
+  summary { cursor: pointer; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🔎 Buscador de despesas eleitorais</h1>
+  <p class="sub">Prova de conceito • Alagoas • Eleições 2026 • Busca textual sem IA</p>
+
+  <div class="info" id="baseInfo">Preparando a base eleitoral...</div>
+
+  <div class="field">
+    <label>Tipo de correspondência</label>
+    <div class="radio-options">
+      <label><input type="radio" name="modo" value="Exata" checked> Exata</label>
+      <label><input type="radio" name="modo" value="Contém trecho"> Contém trecho</label>
+      <label><input type="radio" name="modo" value="Todas as palavras"> Todas as palavras</label>
+    </div>
+  </div>
+
+  <div class="field">
+    <label>Campos em que pesquisar</label>
+    <div class="fields" id="campos">Carregando campos...</div>
+  </div>
+
+  <div class="field">
+    <label for="entrada">Cole nomes, CPFs ou CNPJs (um por linha, separados por ; ou tab)</label>
+    <textarea id="entrada" placeholder="EDILSON DE LIMA SANTOS&#10;SILVA&#10;123.456.789-01"></textarea>
+  </div>
+
+  <button id="buscar" disabled>Preparando buscador...</button>
+  <div id="status" class="status"></div>
+
+  <section id="resultados" hidden>
+    <p id="resumo"></p>
+    <h2>Resultados</h2>
+    <p class="muted">Um registro pode aparecer mais de uma vez quando corresponde a vários termos ou campos.</p>
+    <div class="table-wrap" id="tabela"></div>
+    <p class="muted" id="avisoTabela"></p>
+    <a id="baixar" class="download" hidden>Baixar resultados CSV</a>
+
+    <details id="detalhesAusentes" hidden>
+      <summary>Ver termos não encontrados</summary>
+      <pre id="ausentes"></pre>
+      <a id="baixarAusentes" class="download">Baixar termos não encontrados</a>
+    </details>
+  </section>
+
+  <details>
+    <summary>Sobre a busca e os dados</summary>
+    <p>Exata: igualdade integral do campo. Contém trecho: sequência de caracteres em qualquer posição. Todas as palavras: cada palavra deve aparecer no campo, em qualquer ordem.</p>
+    <p>As buscas ignoram diferenças entre maiúsculas/minúsculas e acentos. Documentos numéricos são comparados sem pontuação.</p>
+    <p>Valores especiais como -1 e -4 podem aparecer na base e não devem ser interpretados como CPF válido.</p>
+    <p>A base é carregada pelo navegador a partir do arquivo público do projeto. Não é necessário enviar arquivos.</p>
+  </details>
+</main>
+
+<script type="module">
+import * as duckdb from
+  'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/+esm';
+
+const ARQUIVO =
+  './despesas_contratadas_candidatos_2026_AL.parquet';
+
+const PREFERIDAS = [
+  'NM_CANDIDATO',
+  'NR_CPF_CANDIDATO',
+  'NM_FORNECEDOR',
+  'NM_FORNECEDOR_RFB',
+  'NR_CPF_CNPJ_FORNECEDOR'
+];
+
+const $ = id => document.getElementById(id);
+
+let linhas = [];
+let colunas = [];
+let indices = new Map();
+let urlsDownload = [];
+
+function normalizar(valor) {
+  let s = String(valor ?? '').trim().toUpperCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '');
+
+  if (/^[\d.\-/\s]+$/.test(s)) {
+    s = s.replace(/\D/g, '');
+  }
+  return s;
+}
+
+function indice(campo) {
+  if (indices.has(campo)) return indices.get(campo);
+
+  const grupos = new Map();
+  linhas.forEach((linha, i) => {
+    const chave = normalizar(linha[campo]);
+    if (!grupos.has(chave)) grupos.set(chave, []);
+    grupos.get(chave).push(i);
+  });
+
+  indices.set(campo, grupos);
+  return grupos;
+}
+
+function procurar(grupos, termo, modo) {
+  if (modo === 'Exata') return grupos.get(termo) || [];
+
+  const palavras = termo.split(/\s+/);
+  const achados = [];
+
+  for (const [valor, posicoes] of grupos) {
+    const corresponde = modo === 'Contém trecho'
+      ? valor.includes(termo)
+      : palavras.every(p => valor.includes(p));
+
+    if (corresponde) achados.push(...posicoes);
+  }
+  return achados;
+}
+
+function csvValor(valor) {
+  const s = String(valor ?? '');
+  return '"' + s.replace(/"/g, '""') + '"';
+}
+
+function criarCSV(registros, campos) {
+  const partes = [campos.map(csvValor).join(';')];
+  for (const r of registros) {
+    partes.push(campos.map(c => csvValor(r[c])).join(';'));
+  }
+  return '\uFEFF' + partes.join('\r\n');
+}
+
+function download(elemento, texto, nome) {
+  const url = URL.createObjectURL(
+    new Blob([texto], {type: 'text/csv;charset=utf-8'})
+  );
+  urlsDownload.push(url);
+  elemento.href = url;
+  elemento.download = nome;
+  elemento.hidden = false;
+}
+
+function limparDownloads() {
+  urlsDownload.forEach(url => URL.revokeObjectURL(url));
+  urlsDownload = [];
+  $('baixar').hidden = true;
+  $('detalhesAusentes').hidden = true;
+}
+
+function mostrarTabela(registros) {
+  const area = $('tabela');
+  area.replaceChildren();
+
+  if (!registros.length) return;
+
+  const campos = ['termo_pesquisado', 'campo_encontrado', ...colunas];
+  const tabela = document.createElement('table');
+  const thead = document.createElement('thead');
+  const trHead = document.createElement('tr');
+
+  campos.forEach(c => {
+    const th = document.createElement('th');
+    th.textContent = c;
+    trHead.appendChild(th);
+  });
+
+  thead.appendChild(trHead);
+  tabela.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+
+  registros.slice(0, 100).forEach(r => {
+    const tr = document.createElement('tr');
+    campos.forEach(c => {
+      const td = document.createElement('td');
+      td.textContent = String(r[c] ?? '');
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+
+  tabela.appendChild(tbody);
+  area.appendChild(tabela);
+}
+
+function pesquisar() {
+  const inicio = performance.now();
+  $('resultados').hidden = true;
+  limparDownloads();
+
+  const campos = [...document.querySelectorAll(
+    '#campos input:checked'
+  )].map(x => x.value);
+
+  if (!campos.length) {
+    $('status').textContent = 'Selecione pelo menos uma coluna.';
+    return;
+  }
+
+  const termos = new Map();
+  $('entrada').value.split(/[;\t\r\n]+/).forEach(original => {
+    original = original.trim();
+    const chave = normalizar(original);
+    if (chave && !termos.has(chave)) {
+      termos.set(chave, original);
+    }
+  });
+
+  if (!termos.size) {
+    $('status').textContent = 'Cole pelo menos um nome, termo ou CPF/CNPJ.';
+    return;
+  }
+
+  if (termos.size > 2000) {
+    $('status').textContent = 'Limite de 2.000 termos por consulta.';
+    return;
+  }
+
+  const modo = document.querySelector(
+    'input[name="modo"]:checked'
+  ).value;
+
+  const encontrados = new Set();
+  const resultados = [];
+
+  for (const campo of campos) {
+    const grupos = indice(campo);
+
+    for (const [chave, original] of termos) {
+      const posicoes = procurar(grupos, chave, modo);
+
+      if (posicoes.length) encontrados.add(chave);
+
+      for (const pos of posicoes) {
+        resultados.push({
+          termo_pesquisado: original,
+          campo_encontrado: campo,
+          ...linhas[pos]
+        });
+      }
+    }
+  }
+
+  const ausentes = [...termos]
+    .filter(([chave]) => !encontrados.has(chave))
+    .map(([, original]) => original);
+
+  $('resumo').textContent =
+    `Termos pesquisados: ${termos.size} | ` +
+    `Correspondências: ${resultados.length} | ` +
+    `Termos sem resultado: ${ausentes.length}`;
+
+  mostrarTabela(resultados);
+
+  $('avisoTabela').textContent = resultados.length
+    ? 'Exibindo até 100 correspondências. O CSV contém todos os resultados.'
+    : 'Nenhuma correspondência encontrada.';
+
+  if (resultados.length) {
+    download(
+      $('baixar'),
+      criarCSV(resultados, [
+        'termo_pesquisado',
+        'campo_encontrado',
+        ...colunas
+      ]),
+      'resultados_busca.csv'
+    );
+  }
+
+  if (ausentes.length) {
+    $('detalhesAusentes').hidden = false;
+    $('ausentes').textContent = ausentes.join('\n');
+    download(
+      $('baixarAusentes'),
+      criarCSV(
+        ausentes.map(x => ({termo_nao_encontrado: x})),
+        ['termo_nao_encontrado']
+      ),
+      'nao_encontrados.csv'
+    );
+  }
+
+  $('resultados').hidden = false;
+  $('status').textContent =
+    `Pesquisa concluída em ${(
+      (performance.now() - inicio) / 1000
+    ).toFixed(2)} segundo(s).`;
+}
+
+async function iniciar() {
+  const inicio = performance.now();
+
+  try {
+    $('status').textContent =
+      'Carregando motor de pesquisa e arquivo Parquet...';
+
+    const bundles = duckdb.getJsDelivrBundles();
+    const bundle = await duckdb.selectBundle(bundles);
+
+    const workerURL = URL.createObjectURL(
+      new Blob(
+        [`importScripts("${bundle.mainWorker}");`],
+        {type: 'text/javascript'}
+      )
+    );
+
+    const worker = new Worker(workerURL);
+    const logger = new duckdb.ConsoleLogger();
+    const db = new duckdb.AsyncDuckDB(logger, worker);
+
+    await db.instantiate(
+      bundle.mainModule,
+      bundle.pthreadWorker
+    );
+
+    URL.revokeObjectURL(workerURL);
+
+    const resposta = await fetch(ARQUIVO);
+    if (!resposta.ok) {
+      throw new Error(
+        `Não foi possível obter o Parquet (HTTP ${resposta.status}).`
+      );
+    }
+
+    const buffer = new Uint8Array(
+      await resposta.arrayBuffer()
+    );
+
+    await db.registerFileBuffer('base.parquet', buffer);
+
+    const con = await db.connect();
+
+    const tabela = await con.query(
+      "SELECT * FROM read_parquet('base.parquet')"
+    );
+
+    colunas = tabela.schema.fields.map(f => f.name);
+
+    linhas = tabela.toArray().map(row => {
+      const obj = row.toJSON();
+      const registro = {};
+      for (const c of colunas) {
+        registro[c] = obj[c] == null
+          ? ''
+          : String(obj[c]);
+      }
+      return registro;
+    });
+
+    await con.close();
+
+    $('baseInfo').textContent =
+      `Base disponível: ${linhas.length.toLocaleString('pt-BR')} ` +
+      `registros e ${colunas.length} colunas.`;
+
+    const area = $('campos');
+    area.replaceChildren();
+
+    colunas.forEach(c => {
+      const label = document.createElement('label');
+      label.className = 'field-option';
+
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.value = c;
+      input.checked = PREFERIDAS.includes(c);
+
+      label.appendChild(input);
+      label.appendChild(document.createTextNode(' ' + c));
+      area.appendChild(label);
+    });
+
+    $('buscar').disabled = false;
+    $('buscar').textContent = 'Buscar na base';
+    $('status').textContent =
+      `Buscador pronto em ${(
+        (performance.now() - inicio) / 1000
+      ).toFixed(2)} segundo(s).`;
+
+  } catch (erro) {
+    console.error(erro);
+    $('baseInfo').textContent =
+      'Não foi possível carregar a base.';
+    $('status').className = 'status erro';
+    $('status').textContent =
+      `Erro: ${erro.message}`;
+  }
+}
+
+$('buscar').addEventListener('click', pesquisar);
+iniciar();
+</script>
+</body>
+</html>
